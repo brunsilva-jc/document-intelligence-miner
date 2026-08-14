@@ -1,0 +1,6 @@
+# Opcional: embeddings locais via HuggingFace (sem custo de API).
+# Instale apenas se EMBEDDING_PROVIDER=huggingface.
+-r requirements.txt
+
+langchain-huggingface==0.1.2
+sentence-transformers==3.3.1

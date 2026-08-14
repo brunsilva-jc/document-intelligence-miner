@@ -1,0 +1,27 @@
+# ---- Web / API ----
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+python-multipart==0.0.20         # upload de arquivos (multipart/form-data)
+
+# ---- Config / Validacao ----
+pydantic==2.10.4
+pydantic-settings==2.7.0
+
+# ---- Persistencia ----
+SQLAlchemy[asyncio]==2.0.36
+asyncpg==0.30.0                  # driver async do PostgreSQL
+pgvector==0.3.6                  # tipo Vector para SQLAlchemy
+alembic==1.14.0                  # migracoes (Fase 3)
+
+# ---- IA / RAG (usado na Fase 2) ----
+langchain==0.3.13
+langchain-core==0.3.28
+langchain-text-splitters==0.3.4
+langchain-openai==0.2.14
+pypdf==5.1.0                     # extracao de texto de PDF
+pandas==2.2.3
+tiktoken==0.8.0                  # contagem de tokens para o chunking
+
+# Backend HuggingFace local (sentence-transformers + torch) fica em
+# requirements-ml.txt: sao ~2 GB de dependencias e nem toda implantacao
+# precisa deles. Veja o README.

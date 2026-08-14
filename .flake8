@@ -1,0 +1,14 @@
+[flake8]
+max-line-length = 100
+# E203/W503: divergencias conhecidas entre flake8 e black.
+extend-ignore = E203, W503
+exclude =
+    .git,
+    __pycache__,
+    .venv,
+    venv,
+    build,
+    dist
+per-file-ignores =
+    app/api/routes.py:B008
+max-complexity = 10
