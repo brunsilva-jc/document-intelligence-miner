@@ -1,0 +1,115 @@
+# Producao — compartilhando o servidor com o services-orchestrator.
+#
+# Este arquivo e COMPLETO, nao um override do docker-compose.yml. Na fusao de
+# dois arquivos o Compose CONCATENA `ports` em vez de substituir, entao um
+# override jamais conseguiria despublicar a 5433 do arquivo de dev. Herdar dele
+# seria herdar exatamente o que precisamos remover.
+#
+# Uso (a flag --env-file e obrigatoria; sem ela o Compose procura um .env ao
+# lado do arquivo, e nao na raiz do projeto):
+#   docker compose --env-file .env -f docker-compose.prod.yml up -d --build
+#
+# Pre-requisitos: .env com ENVIRONMENT=production, API_KEY, POSTGRES_PASSWORD e
+# OPENAI_API_KEY preenchidos — a aplicacao recusa subir sem eles.
+
+name: dim
+
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    container_name: dim_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-dim}
+      # Sem default de proposito: `?` aborta o up com mensagem clara em vez
+      # de subir um banco com a senha de desenvolvimento.
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?defina POSTGRES_PASSWORD no .env}
+      POSTGRES_DB: ${POSTGRES_DB:-dim_db}
+    # Sem `ports`: o banco so existe dentro da rede do Compose.
+    #
+    # Publicar 5433 no host o exporia na INTERNET mesmo com o UFW fechado: as
+    # regras de NAT que o Docker escreve sao avaliadas antes das do UFW, entao
+    # "so 22/80/443 liberadas" nao vale para porta publicada por container.
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./docker/postgres/init.sql:/docker-entrypoint-initdb.d/00-init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-dim} -d ${POSTGRES_DB:-dim_db}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+    mem_limit: 1g
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # Um passo so, que roda ate o fim e sai. A API depende dele com
+  # `service_completed_successfully`: se a migracao falhar, a API nao sobe —
+  # em vez de subir e responder 500 em toda rota.
+  migrate:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: dim_migrate
+    command: alembic upgrade head
+    env_file:
+      - .env
+    environment:
+      POSTGRES_HOST: db
+      POSTGRES_PORT: 5432
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: "no"
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: dim_api
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      POSTGRES_HOST: db
+      POSTGRES_PORT: 5432
+    # Sem `ports` e sem bind-mount do codigo: quem fala com a API e o Caddy do
+    # orchestrator, pela rede `web`. O codigo vem da imagem, nao do disco do
+    # servidor — o que esta rodando e exatamente o que foi construido.
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    networks:
+      - default
+      - web
+    # Teto de memoria porque a maquina e compartilhada: sem limite, um pico
+    # aqui vira OOM killer escolhendo vitima entre os workers do orchestrator,
+    # que sao trabalho pago.
+    mem_limit: 1g
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  pgdata:
+
+networks:
+  # Rede interna: so `db`, `migrate` e `api` se enxergam.
+  default:
+  # Rede do orchestrator, onde o Caddy vive. Externa porque o dono dela e o
+  # outro compose — este aqui so entra como convidado e nunca a remove.
+  web:
+    external: true
+    name: services-orchestrator_default
