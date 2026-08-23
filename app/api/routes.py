@@ -6,11 +6,12 @@ Nenhuma regra de negocio ou SQL vive aqui.
 
 import uuid
 
-from fastapi import APIRouter, File, Query, UploadFile, status
+from fastapi import APIRouter, Depends, File, Query, Response, UploadFile, status
 
 from app.__version__ import __version__
 from app.api.deps import DocumentServiceDep, RagEngineDep
 from app.core.config import settings
+from app.core.security import require_api_key
 from app.db.session import check_db_connection
 from app.models.schemas import (
     AskRequest,
@@ -25,7 +26,15 @@ from app.models.schemas import (
 )
 
 health_router = APIRouter(tags=["health"])
-documents_router = APIRouter(prefix="/documents", tags=["documents"])
+
+# A chave e exigida no router, nao rota a rota: uma rota nova nasce
+# protegida por padrao, e esquecer de proteger deixa de ser possivel.
+documents_router = APIRouter(
+    prefix="/documents",
+    tags=["documents"],
+    dependencies=[Depends(require_api_key)],
+    responses={401: {"model": ErrorResponse}},
+)
 
 
 # --------------------------------------------------------------------------
@@ -35,6 +44,16 @@ documents_router = APIRouter(prefix="/documents", tags=["documents"])
 async def health() -> HealthResponse:
     """Responde enquanto o processo estiver vivo (nao toca no banco)."""
     return HealthResponse(status="ok", service=settings.PROJECT_NAME, version=__version__)
+
+
+# HEAD precisa de rota propria: `.get()` registra so GET, e monitor externo
+# (UptimeRobot, por exemplo) sonda com HEAD por padrao — levaria 405 e
+# acusaria queda com o servico de pe. Fora do schema para nao duplicar a
+# operacao no OpenAPI; a resposta a HEAD nao tem corpo mesmo.
+@health_router.head("/health", include_in_schema=False)
+async def health_head() -> Response:
+    """Mesmo contrato do GET, sem corpo."""
+    return Response(status_code=status.HTTP_200_OK)
 
 
 @health_router.get(

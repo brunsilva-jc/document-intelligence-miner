@@ -30,6 +30,10 @@ COPY --from=builder /opt/venv /opt/venv
 
 WORKDIR /home/app
 COPY --chown=app:app app ./app
+# As migracoes entram na imagem: e o mesmo artefato que roda
+# `alembic upgrade head` no deploy e depois serve a API.
+COPY --chown=app:app alembic.ini ./alembic.ini
+COPY --chown=app:app migrations ./migrations
 
 USER app
 

@@ -7,8 +7,11 @@ linguagem natural são respondidas por um LLM usando apenas os trechos mais
 relevantes do seu acervo — com citação das fontes.
 
 > **Status:** Fases 1 e 2 concluídas — infraestrutura, banco, ingestão com
-> chunking + embeddings e o motor de RAG completo. Falta apenas configurar a
-> `OPENAI_API_KEY` para usar `/ask` com um LLM real.
+> chunking + embeddings e o motor de RAG completo. Da Fase 3 já entraram
+> **migrações Alembic** e **autenticação por chave de API**, o que torna o
+> projeto implantável fora da máquina do desenvolvedor — veja
+> [`docs/DEPLOY.md`](docs/DEPLOY.md). Falta configurar a `OPENAI_API_KEY` para
+> usar `/ask` com um LLM real.
 
 ---
 
@@ -55,6 +58,7 @@ document-intelligence-miner/
 │   ├── core/
 │   │   ├── config.py              # Settings (Pydantic BaseSettings)
 │   │   ├── exceptions.py          # erros de domínio + handlers HTTP
+│   │   ├── security.py            # chave de API (header X-API-Key)
 │   │   └── logging.py
 │   ├── db/
 │   │   ├── base.py                # DeclarativeBase + TimestampMixin
@@ -70,9 +74,13 @@ document-intelligence-miner/
 │       ├── embeddings.py          # OpenAI / HuggingFace atrás de um Protocol
 │       └── rag_engine.py          # busca semântica + prompt + LLM
 ├── docker/postgres/init.sql       # CREATE EXTENSION vector
+├── docs/DEPLOY.md                 # subir no servidor compartilhado
+├── migrations/                    # Alembic: env.py + versions/
 ├── tests/
+├── alembic.ini
 ├── Dockerfile                     # build multi-stage, usuário não-root
-├── docker-compose.yml
+├── docker-compose.yml             # desenvolvimento
+├── docker-compose.prod.yml        # produção (arquivo completo, não override)
 └── requirements*.txt
 ```
 
@@ -147,15 +155,20 @@ black --check app tests && isort --check-only app tests && flake8 app tests
 
 ## Endpoints
 
-| Método | Rota | Descrição | Status |
+| Método | Rota | Descrição | Chave |
 | --- | --- | --- | --- |
-| `GET` | `/health` | Liveness (não toca no banco) | ✅ |
-| `GET` | `/health/ready` | Readiness (verifica PostgreSQL) | ✅ |
-| `POST` | `/api/v1/documents/upload` | Ingestão: extração → chunking → embeddings | ✅ |
-| `POST` | `/api/v1/documents/ask` | Pergunta com RAG, retorna resposta + fontes | ✅ |
-| `GET` | `/api/v1/documents` | Lista documentos (paginado) | ✅ |
-| `GET` | `/api/v1/documents/{id}` | Detalhe do documento | ✅ |
-| `DELETE` | `/api/v1/documents/{id}` | Remove documento e seus chunks | ✅ |
+| `GET`/`HEAD` | `/health` | Liveness (não toca no banco) | — |
+| `GET` | `/health/ready` | Readiness (verifica PostgreSQL) | — |
+| `POST` | `/api/v1/documents/upload` | Ingestão: extração → chunking → embeddings | 🔑 |
+| `POST` | `/api/v1/documents/ask` | Pergunta com RAG, retorna resposta + fontes | 🔑 |
+| `GET` | `/api/v1/documents` | Lista documentos (paginado) | 🔑 |
+| `GET` | `/api/v1/documents/{id}` | Detalhe do documento | 🔑 |
+| `DELETE` | `/api/v1/documents/{id}` | Remove documento e seus chunks | 🔑 |
+
+🔑 = exige o header `X-API-Key` quando `API_KEY` está configurada (obrigatória
+fora de `ENVIRONMENT=local`). O `/health` fica aberto de propósito: o monitor
+externo não tem credencial — e responde a `HEAD`, que é como o UptimeRobot
+sonda por padrão.
 
 ### Exemplos
 
@@ -203,6 +216,9 @@ Todas as variáveis estão documentadas em `.env.example`. As mais relevantes:
 
 | Variável | Padrão | Observação |
 | --- | --- | --- |
+| `ENVIRONMENT` | `local` | `staging`/`production` ativam as exigências abaixo |
+| `API_KEY` | vazio | header `X-API-Key`; **obrigatória** fora de `local` (≥ 32 car.) |
+| `CORS_ALLOW_ORIGINS` | `[]` | só preencha se um navegador for chamar a API |
 | `EMBEDDING_PROVIDER` | `openai` | `openai` ou `huggingface` |
 | `EMBEDDING_MODEL` | `text-embedding-3-small` | |
 | `EMBEDDING_DIM` | `1536` | **deve** casar com o modelo (MiniLM-L6-v2 → 384) |
@@ -214,6 +230,55 @@ Todas as variáveis estão documentadas em `.env.example`. As mais relevantes:
 Embeddings locais via HuggingFace (`sentence-transformers` + `torch`, ~2 GB)
 ficam em `requirements-ml.txt`, fora da imagem padrão — instale apenas se
 `EMBEDDING_PROVIDER=huggingface`.
+
+### Segurança
+
+As rotas de documentos são *metered*: cada `/upload` e cada `/ask` gastam tokens
+pagos no provedor. Por isso o comportamento muda com o `ENVIRONMENT`:
+
+| | `local` | `staging` / `production` |
+| --- | --- | --- |
+| Chave de API | opcional (vazia = desligada) | **obrigatória**, ≥ 32 caracteres |
+| `/docs`, `/redoc`, `/openapi.json` | no ar | fora do ar (404) |
+| CORS | `*` | apenas `CORS_ALLOW_ORIGINS` |
+| Schema do banco | `metadata.create_all` | Alembic (e a API confere no boot) |
+| Senha `dim_secret` | aceita | recusada no boot |
+| `OPENAI_API_KEY` ausente | aceita (`/ask` responde 502) | recusada no boot |
+
+As recusas acontecem no **boot**, não na primeira requisição, e a mensagem lista
+todos os problemas de uma vez. Uma API que sobe, responde `/health` e parece
+saudável enquanto está aberta ou sem schema é o pior dos mundos.
+
+```bash
+python -c "import secrets; print(secrets.token_urlsafe(32))"   # gera a API_KEY
+curl -H "X-API-Key: $API_KEY" localhost:8000/api/v1/documents
+```
+
+---
+
+## Migrações (Alembic)
+
+Em `local` o schema nasce do próprio metadata no startup — quem clonou o repo
+não precisa saber que o Alembic existe. Fora de `local` o schema é do Alembic, e
+o startup apenas **confere** (a API não sobe com as tabelas faltando).
+
+```bash
+alembic upgrade head          # aplica  (o serviço `migrate` faz isso no deploy)
+alembic downgrade base        # desfaz
+alembic check                 # o schema ainda casa com os modelos?
+alembic revision --autogenerate -m "descricao"
+```
+
+`alembic check` é o que impede a dupla schema/modelo de divergir em silêncio;
+vale rodar depois de mexer em `app/models/domain.py`.
+
+Duas particularidades desta base:
+
+- A **primeira revisão foi escrita à mão**: o autogenerate não sabe que a
+  extensão `vector` precisa existir antes das colunas que usam o tipo.
+- A **dimensão do embedding vem de `settings.EMBEDDING_DIM`**, como no modelo
+  ORM. Deixa a revisão dependente do ambiente — o mal menor, já que schema e
+  modelo têm de concordar ou todo `INSERT` falha.
 
 ---
 
@@ -272,5 +337,5 @@ ficam em `requirements-ml.txt`, fora da imagem padrão — instale apenas se
 
 - [x] Fase 1 — Docker, PostgreSQL + pgvector, esqueleto da API, CI
 - [x] Fase 2 — extração de PDF, chunking, embeddings, busca por similaridade e RAG
-- [ ] Fase 3 — migrações Alembic, ingestão assíncrona em background, autenticação
+- [ ] Fase 3 — [x] migrações Alembic · [x] autenticação por chave · [ ] ingestão assíncrona em background
 - [ ] Fase 4 — reranking, busca híbrida (BM25 + vetorial), OCR

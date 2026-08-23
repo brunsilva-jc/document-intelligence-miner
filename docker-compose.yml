@@ -9,7 +9,9 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-dim_db}
     ports:
       # Porta publicada no host (separada da interna, que e sempre 5432).
-      - "${POSTGRES_HOST_PORT:-5433}:5432"
+      # Presa ao loopback: sem o `127.0.0.1:` o Docker abre a porta em todas
+      # as interfaces, e o banco de dev fica visivel para a rede local.
+      - "127.0.0.1:${POSTGRES_HOST_PORT:-5433}:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
       # Executado apenas na primeira inicializacao (volume vazio).

@@ -3,8 +3,15 @@
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import Field, PostgresDsn, computed_field
+from pydantic import Field, PostgresDsn, computed_field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# Senha do compose de desenvolvimento. Serve para subir rapido na maquina do
+# dev e para mais nada — fora de `local` e recusada no boot.
+INSECURE_DEV_PASSWORD = "dim_secret"
+
+# Abaixo disso a chave e forca-brutavel. `secrets.token_urlsafe(32)` da 43.
+MIN_API_KEY_LENGTH = 32
 
 
 class Settings(BaseSettings):
@@ -23,6 +30,14 @@ class Settings(BaseSettings):
     ENVIRONMENT: Literal["local", "staging", "production"] = "local"
     DEBUG: bool = False
     LOG_LEVEL: str = "INFO"
+
+    # ---- Seguranca ----
+    # Exigida no header X-API-Key em toda rota de documentos. Vazia desliga
+    # a checagem, o que so e aceito em ENVIRONMENT=local.
+    API_KEY: str | None = None
+    # Origens liberadas no CORS. Vazio = nenhuma, que e o certo para uma API
+    # consumida por servidor. So preencha se um navegador for chamar isto.
+    CORS_ALLOW_ORIGINS: list[str] = []
 
     # ---- Banco de dados ----
     POSTGRES_HOST: str = "localhost"
@@ -55,6 +70,45 @@ class Settings(BaseSettings):
     RETRIEVAL_TOP_K: int = Field(default=4, ge=1, le=50)
     # Distancia de cosseno maxima aceita (0 = identico, 2 = oposto).
     RETRIEVAL_MAX_DISTANCE: float = Field(default=0.6, ge=0.0, le=2.0)
+
+    @model_validator(mode="after")
+    def _exigir_configuracao_de_producao(self) -> "Settings":
+        """Falha no BOOT, nao na primeira requisicao.
+
+        Os tres erros abaixo tem em comum serem invisiveis: a aplicacao
+        sobe, responde /health e parece saudavel. Sem `API_KEY` ela e uma
+        API paga aberta; com a senha de desenvolvimento ela e um Postgres
+        de senha publicada; sem `OPENAI_API_KEY` todo /ask responde 502.
+        Barato de achar agora, caro de achar com o servico no ar.
+        """
+        if self.ENVIRONMENT == "local":
+            return self
+
+        problemas: list[str] = []
+
+        if not self.API_KEY:
+            problemas.append(
+                "API_KEY nao definida (gere uma com: python -c "
+                "'import secrets; print(secrets.token_urlsafe(32))')"
+            )
+        elif len(self.API_KEY) < MIN_API_KEY_LENGTH:
+            problemas.append(
+                f"API_KEY tem {len(self.API_KEY)} caracteres, " f"o minimo e {MIN_API_KEY_LENGTH}"
+            )
+
+        if self.POSTGRES_PASSWORD == INSECURE_DEV_PASSWORD:
+            problemas.append("POSTGRES_PASSWORD ainda e a senha de desenvolvimento")
+
+        if not self.OPENAI_API_KEY and "openai" in (self.EMBEDDING_PROVIDER, self.LLM_PROVIDER):
+            problemas.append("OPENAI_API_KEY nao definida, mas um provedor OpenAI esta ativo")
+
+        if problemas:
+            raise ValueError(
+                f"configuracao invalida para ENVIRONMENT={self.ENVIRONMENT}: "
+                + "; ".join(problemas)
+            )
+
+        return self
 
     @computed_field  # type: ignore[prop-decorator]
     @property

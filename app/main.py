@@ -29,6 +29,11 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
 
 def create_app() -> FastAPI:
     """Application factory — facilita testes e multiplas configuracoes."""
+    # Fora de `local` a documentacao interativa sai do ar: ela descreve, para
+    # quem passar na porta, exatamente como gastar a conta de API. Quem
+    # integra recebe o OpenAPI por outro canal.
+    expor_docs = settings.ENVIRONMENT == "local"
+
     app = FastAPI(
         title=settings.PROJECT_NAME,
         description=(
@@ -37,15 +42,17 @@ def create_app() -> FastAPI:
         ),
         version=__version__,
         lifespan=lifespan,
-        docs_url="/docs",
-        redoc_url="/redoc",
-        openapi_url="/openapi.json",
+        docs_url="/docs" if expor_docs else None,
+        redoc_url="/redoc" if expor_docs else None,
+        openapi_url="/openapi.json" if expor_docs else None,
     )
 
+    # `allow_credentials=True` com origem "*" e recusado por todo navegador,
+    # e aqui nao faz falta: a credencial e o header X-API-Key, nao um cookie.
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"] if settings.ENVIRONMENT == "local" else [],
-        allow_credentials=True,
+        allow_origins=["*"] if expor_docs else settings.CORS_ALLOW_ORIGINS,
+        allow_credentials=False,
         allow_methods=["*"],
         allow_headers=["*"],
     )

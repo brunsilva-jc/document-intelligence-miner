@@ -48,10 +48,13 @@ async def get_session() -> AsyncGenerator[AsyncSession, None]:
 
 
 async def init_db() -> None:
-    """Garante a extensao pgvector e cria o schema.
+    """Garante a extensao pgvector e confere o schema.
 
-    Conveniencia para o ambiente local. Em staging/producao o schema deve
-    ser versionado com Alembic (`alembic upgrade head`) — veja o README.
+    Em `local` o schema nasce do proprio metadata — conveniencia para quem
+    acabou de clonar o repositorio. Fora de `local` quem cria o schema e o
+    Alembic (`alembic upgrade head`), e o papel desta funcao passa a ser
+    CONFERIR: uma API que sobe com as tabelas faltando parece saudavel no
+    /health e responde 500 em tudo que importa. Melhor nao subir.
     """
     # Import tardio: registra os modelos no metadata da Base.
     from app.db.base import Base
@@ -59,9 +62,25 @@ async def init_db() -> None:
 
     async with engine.begin() as conn:
         await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
+
         if settings.ENVIRONMENT == "local":
             await conn.run_sync(Base.metadata.create_all)
-            logger.info("schema sincronizado via metadata.create_all")
+            logger.info("schema sincronizado via metadata.create_all (so em local)")
+            return
+
+        # `to_regclass` devolve NULL em vez de levantar erro quando a
+        # tabela nao existe — da para perguntar sem abortar a transacao.
+        schema_aplicado = await conn.scalar(text("SELECT to_regclass('public.document_chunks')"))
+        if schema_aplicado is None:
+            raise RuntimeError(
+                "schema ausente no banco: rode `alembic upgrade head` antes de subir a API "
+                f"(ENVIRONMENT={settings.ENVIRONMENT})"
+            )
+
+        revisao = None
+        if await conn.scalar(text("SELECT to_regclass('public.alembic_version')")) is not None:
+            revisao = await conn.scalar(text("SELECT version_num FROM alembic_version"))
+        logger.info("schema conferido (revisao alembic=%s)", revisao or "desconhecida")
 
 
 async def check_db_connection() -> bool:
