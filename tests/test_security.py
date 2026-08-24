@@ -96,7 +96,7 @@ async def test_health_responde_a_HEAD(client_protegido: AsyncClient) -> None:
     """UptimeRobot sonda com HEAD por padrao.
 
     Um /health que so aceita GET responde 405 e o monitor passa a acusar
-    queda com o servico de pe — ja aconteceu no orchestrator.
+    queda com o servico de pe.
     """
     response = await client_protegido.head("/health")
 

@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.__version__ import __version__
 from app.api.routes import api_router, health_router
+from app.core.body_limit import MULTIPART_OVERHEAD_BYTES, LimiteDeCorpoMiddleware
 from app.core.config import settings
 from app.core.exceptions import register_exception_handlers
 from app.core.logging import get_logger, setup_logging
@@ -45,6 +46,16 @@ def create_app() -> FastAPI:
         docs_url="/docs" if expor_docs else None,
         redoc_url="/redoc" if expor_docs else None,
         openapi_url="/openapi.json" if expor_docs else None,
+    )
+
+    # A ordem de `add_middleware` e de dentro para fora: o ultimo
+    # adicionado envolve os anteriores. O CORS vem por ultimo de proposito
+    # — assim ate a recusa por corpo grande demais volta com os
+    # cabecalhos de CORS, e o navegador mostra o 413 em vez de um erro
+    # generico de rede.
+    app.add_middleware(
+        LimiteDeCorpoMiddleware,
+        max_bytes=settings.MAX_UPLOAD_SIZE_BYTES + MULTIPART_OVERHEAD_BYTES,
     )
 
     # `allow_credentials=True` com origem "*" e recusado por todo navegador,

@@ -1,4 +1,4 @@
-# Producao — compartilhando o servidor com o services-orchestrator.
+# Producao.
 #
 # Este arquivo e COMPLETO, nao um override do docker-compose.yml. Na fusao de
 # dois arquivos o Compose CONCATENA `ports` em vez de substituir, entao um
@@ -10,7 +10,9 @@
 #   docker compose --env-file .env -f docker-compose.prod.yml up -d --build
 #
 # Pre-requisitos: .env com ENVIRONMENT=production, API_KEY, POSTGRES_PASSWORD e
-# OPENAI_API_KEY preenchidos — a aplicacao recusa subir sem eles.
+# OPENAI_API_KEY preenchidos — a aplicacao recusa subir sem eles. E uma rede
+# externa onde viva o proxy reverso que termina o TLS (veja EDGE_NETWORK em
+# docs/DEPLOY.md).
 
 name: dim
 
@@ -81,8 +83,8 @@ services:
     environment:
       POSTGRES_HOST: db
       POSTGRES_PORT: 5432
-    # Sem `ports` e sem bind-mount do codigo: quem fala com a API e o Caddy do
-    # orchestrator, pela rede `web`. O codigo vem da imagem, nao do disco do
+    # Sem `ports` e sem bind-mount do codigo: quem fala com a API e o proxy
+    # reverso, pela rede `edge`. O codigo vem da imagem, nao do disco do
     # servidor — o que esta rodando e exatamente o que foi construido.
     depends_on:
       db:
@@ -91,10 +93,10 @@ services:
         condition: service_completed_successfully
     networks:
       - default
-      - web
-    # Teto de memoria porque a maquina e compartilhada: sem limite, um pico
-    # aqui vira OOM killer escolhendo vitima entre os workers do orchestrator,
-    # que sao trabalho pago.
+      - edge
+    # Teto de memoria: sem limite, um pico aqui faz o OOM killer escolher a
+    # vitima entre TODOS os processos da maquina — e o kernel nao sabe quais
+    # sao os importantes. Com o teto, quem morre e este container.
     mem_limit: 1g
     logging:
       driver: json-file
@@ -108,8 +110,10 @@ volumes:
 networks:
   # Rede interna: so `db`, `migrate` e `api` se enxergam.
   default:
-  # Rede do orchestrator, onde o Caddy vive. Externa porque o dono dela e o
-  # outro compose — este aqui so entra como convidado e nunca a remove.
-  web:
+  # Rede onde vive o proxy reverso que termina o TLS. Externa porque este
+  # projeto entra nela como convidado: nao a cria, nao a remove e nao sabe
+  # quem mais esta la. O nome vem do ambiente justamente para que trocar de
+  # servidor (ou de proxy) nao seja mudanca de codigo.
+  edge:
     external: true
-    name: services-orchestrator_default
+    name: ${EDGE_NETWORK:-edge}

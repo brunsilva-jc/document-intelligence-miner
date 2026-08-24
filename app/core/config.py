@@ -39,6 +39,19 @@ class Settings(BaseSettings):
     # consumida por servidor. So preencha se um navegador for chamar isto.
     CORS_ALLOW_ORIGINS: list[str] = []
 
+    # ---- Limites de uso ----
+    # A chave diz QUEM pode chamar; estes tetos dizem QUANTO. Sem eles,
+    # uma chave vazada (ou uma demo publica) e um laco de /ask gastando a
+    # conta do provedor ate o limite do cartao.
+    RATE_LIMIT_ENABLED: bool = True
+    # Janela curta, por cliente: contem rajada.
+    RATE_LIMIT_REQUESTS: int = Field(default=60, ge=1)
+    RATE_LIMIT_WINDOW_SECONDS: int = Field(default=60, ge=1)
+    # Teto das rotas que gastam tokens (/upload e /ask). Global, porque o
+    # que se protege e uma fatura so.
+    RATE_LIMIT_METERED_DAILY: int = Field(default=200, ge=1)
+    RATE_LIMIT_METERED_WINDOW_SECONDS: int = Field(default=86_400, ge=1)
+
     # ---- Banco de dados ----
     POSTGRES_HOST: str = "localhost"
     POSTGRES_PORT: int = 5432

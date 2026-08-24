@@ -11,6 +11,7 @@ from fastapi import APIRouter, Depends, File, Query, Response, UploadFile, statu
 from app.__version__ import __version__
 from app.api.deps import DocumentServiceDep, RagEngineDep
 from app.core.config import settings
+from app.core.rate_limit import limitar_operacoes_pagas, limitar_requisicoes
 from app.core.security import require_api_key
 from app.db.session import check_db_connection
 from app.models.schemas import (
@@ -27,13 +28,18 @@ from app.models.schemas import (
 
 health_router = APIRouter(tags=["health"])
 
-# A chave e exigida no router, nao rota a rota: uma rota nova nasce
-# protegida por padrao, e esquecer de proteger deixa de ser possivel.
+# Chave e limite de uso sao exigidos no router, nao rota a rota: uma
+# rota nova nasce protegida por padrao, e esquecer de proteger deixa de
+# ser possivel. A ordem importa — quem nao passou na autenticacao nao
+# consome a cota de quem passou.
 documents_router = APIRouter(
     prefix="/documents",
     tags=["documents"],
-    dependencies=[Depends(require_api_key)],
-    responses={401: {"model": ErrorResponse}},
+    dependencies=[Depends(require_api_key), Depends(limitar_requisicoes)],
+    responses={
+        401: {"model": ErrorResponse},
+        429: {"model": ErrorResponse},
+    },
 )
 
 
@@ -81,6 +87,8 @@ async def readiness() -> ReadinessResponse:
     response_model=UploadResponse,
     status_code=status.HTTP_201_CREATED,
     summary="Ingere um PDF ou TXT: extrai, divide em chunks e vetoriza",
+    # Vetorizar um documento e cobrado por token: entra no teto diario.
+    dependencies=[Depends(limitar_operacoes_pagas)],
     responses={
         413: {"model": ErrorResponse},
         415: {"model": ErrorResponse},
@@ -113,6 +121,8 @@ async def upload_document(
     "/ask",
     response_model=AskResponse,
     summary="Responde uma pergunta usando RAG sobre os documentos ingeridos",
+    # Uma pergunta = um embedding + uma chamada ao LLM, ambos cobrados.
+    dependencies=[Depends(limitar_operacoes_pagas)],
     responses={404: {"model": ErrorResponse}, 502: {"model": ErrorResponse}},
 )
 async def ask_documents(payload: AskRequest, engine: RagEngineDep) -> AskResponse:
