@@ -23,6 +23,15 @@ class DomainError(Exception):
         self.message = message or self.default_message
         super().__init__(self.message)
 
+    @property
+    def headers(self) -> dict[str, str]:
+        """Cabecalhos extras que a resposta de erro deve carregar.
+
+        Vazio para quase todo erro: so o 429 precisa dizer ao cliente
+        quando voltar (`Retry-After`).
+        """
+        return {}
+
 
 class UnsupportedFileTypeError(DomainError):
     status_code = status.HTTP_415_UNSUPPORTED_MEDIA_TYPE
@@ -49,6 +58,23 @@ class NoRelevantContextError(DomainError):
     default_message = "Nenhum trecho relevante encontrado para a pergunta."
 
 
+class RateLimitExceededError(DomainError):
+    """Cliente passou do teto de requisicoes da janela atual."""
+
+    status_code = status.HTTP_429_TOO_MANY_REQUESTS
+    default_message = "Limite de uso excedido. Tente novamente mais tarde."
+
+    def __init__(self, message: str | None = None, retry_after: int | None = None) -> None:
+        super().__init__(message)
+        self.retry_after = retry_after
+
+    @property
+    def headers(self) -> dict[str, str]:
+        # Sem `Retry-After` o cliente educado nao tem como saber quando
+        # voltar, e o unico caminho que sobra e tentar de novo em loop.
+        return {"Retry-After": str(self.retry_after)} if self.retry_after else {}
+
+
 class EmbeddingProviderError(DomainError):
     status_code = status.HTTP_502_BAD_GATEWAY
     default_message = "Falha ao comunicar com o provedor de embeddings."
@@ -67,6 +93,7 @@ def register_exception_handlers(app: FastAPI) -> None:
         return JSONResponse(
             status_code=exc.status_code,
             content={"detail": exc.message, "error": type(exc).__name__},
+            headers=exc.headers or None,
         )
 
     @app.exception_handler(Exception)

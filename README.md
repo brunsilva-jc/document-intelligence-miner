@@ -8,8 +8,9 @@ relevantes do seu acervo — com citação das fontes.
 
 > **Status:** Fases 1 e 2 concluídas — infraestrutura, banco, ingestão com
 > chunking + embeddings e o motor de RAG completo. Da Fase 3 já entraram
-> **migrações Alembic** e **autenticação por chave de API**, o que torna o
-> projeto implantável fora da máquina do desenvolvedor — veja
+> **migrações Alembic**, **autenticação por chave de API** e **limites de
+> uso** (rajada, teto diário de gasto e teto de corpo da requisição), o que
+> torna o projeto implantável fora da máquina do desenvolvedor — veja
 > [`docs/DEPLOY.md`](docs/DEPLOY.md). Falta configurar a `OPENAI_API_KEY` para
 > usar `/ask` com um LLM real.
 
@@ -59,6 +60,8 @@ document-intelligence-miner/
 │   │   ├── config.py              # Settings (Pydantic BaseSettings)
 │   │   ├── exceptions.py          # erros de domínio + handlers HTTP
 │   │   ├── security.py            # chave de API (header X-API-Key)
+│   │   ├── rate_limit.py          # tetos de rajada e de gasto diário
+│   │   ├── body_limit.py          # teto de corpo, antes de o corpo ser lido
 │   │   └── logging.py
 │   ├── db/
 │   │   ├── base.py                # DeclarativeBase + TimestampMixin
@@ -74,8 +77,9 @@ document-intelligence-miner/
 │       ├── embeddings.py          # OpenAI / HuggingFace atrás de um Protocol
 │       └── rag_engine.py          # busca semântica + prompt + LLM
 ├── docker/postgres/init.sql       # CREATE EXTENSION vector
-├── docs/DEPLOY.md                 # subir no servidor compartilhado
+├── docs/DEPLOY.md                 # subir num servidor com Docker
 ├── migrations/                    # Alembic: env.py + versions/
+├── scripts/pg_backup.sh           # dump + rotação + envio para fora
 ├── tests/
 ├── alembic.ini
 ├── Dockerfile                     # build multi-stage, usuário não-root
@@ -166,9 +170,10 @@ black --check app tests && isort --check-only app tests && flake8 app tests
 | `DELETE` | `/api/v1/documents/{id}` | Remove documento e seus chunks | 🔑 |
 
 🔑 = exige o header `X-API-Key` quando `API_KEY` está configurada (obrigatória
-fora de `ENVIRONMENT=local`). O `/health` fica aberto de propósito: o monitor
-externo não tem credencial — e responde a `HEAD`, que é como o UptimeRobot
-sonda por padrão.
+fora de `ENVIRONMENT=local`) e conta nos limites de uso, que respondem `429`
+com `Retry-After`. O `/health` fica aberto de propósito e fora do limite: o
+monitor externo não tem credencial — e responde a `HEAD`, que é como o
+UptimeRobot sonda por padrão.
 
 ### Exemplos
 
@@ -205,8 +210,9 @@ curl -X POST localhost:8000/api/v1/documents/ask \
 ```
 
 Erros usam sempre o mesmo envelope (`{"detail": …, "error": …}`): `415` tipo não
-suportado, `413` arquivo grande demais, `422` sem texto extraível, `404` nenhum
-trecho relevante, `502` falha do provedor externo.
+suportado, `413` arquivo (ou corpo) grande demais, `422` sem texto extraível,
+`404` nenhum trecho relevante, `429` limite de uso excedido (com `Retry-After`),
+`502` falha do provedor externo.
 
 ---
 
@@ -226,6 +232,10 @@ Todas as variáveis estão documentadas em `.env.example`. As mais relevantes:
 | `CHUNK_SIZE` / `CHUNK_OVERLAP` | `1000` / `150` | em caracteres |
 | `RETRIEVAL_TOP_K` | `4` | blocos enviados ao LLM |
 | `RETRIEVAL_MAX_DISTANCE` | `0.6` | corte de relevância (0 = idêntico) |
+| `RATE_LIMIT_REQUESTS` / `RATE_LIMIT_WINDOW_SECONDS` | `60` / `60` | rajada, por cliente |
+| `RATE_LIMIT_METERED_DAILY` | `200` | `/upload` + `/ask` por dia, **global** |
+| `MAX_UPLOAD_SIZE_MB` | `20` | tamanho do arquivo aceito |
+| `EDGE_NETWORK` | `edge` | rede do proxy reverso (só em produção) |
 
 Embeddings locais via HuggingFace (`sentence-transformers` + `torch`, ~2 GB)
 ficam em `requirements-ml.txt`, fora da imagem padrão — instale apenas se
@@ -248,6 +258,29 @@ pagos no provedor. Por isso o comportamento muda com o `ENVIRONMENT`:
 As recusas acontecem no **boot**, não na primeira requisição, e a mensagem lista
 todos os problemas de uma vez. Uma API que sobe, responde `/health` e parece
 saudável enquanto está aberta ou sem schema é o pior dos mundos.
+
+#### Limites de uso
+
+A chave responde *quem* pode chamar; ela não responde *quanto*. Com a chave em
+mãos, um laço de `/ask` gasta a `OPENAI_API_KEY` do dono até o teto do cartão —
+e uma demonstração pública existe justamente para ser chamada por estranhos.
+
+| Limite | Escopo | Onde |
+| --- | --- | --- |
+| `RATE_LIMIT_REQUESTS` por janela | por cliente (chave, ou IP sem chave) | todas as rotas `/documents` |
+| `RATE_LIMIT_METERED_DAILY` | **global** — a fatura é uma só | `/upload` e `/ask` |
+| `MAX_UPLOAD_SIZE_MB` + folga | por requisição | qualquer corpo |
+
+O teto de corpo é aplicado **antes** de o corpo ser lido
+(`app/core/body_limit.py`): recusa pelo `Content-Length` declarado e, quando ele
+não existe (`chunked`) ou mente, corta pela contagem do que chega. A validação
+de `DocumentProcessor` continua lá, com a mensagem precisa — mas ela só roda
+depois de o multipart inteiro ter sido montado, tarde demais numa máquina com
+teto de memória.
+
+Os contadores vivem em memória do processo: reiniciar zera o teto diário, e mais
+de um worker do uvicorn multiplicaria o teto pelo número de workers. O
+`Dockerfile` sobe um worker só de propósito.
 
 ```bash
 python -c "import secrets; print(secrets.token_urlsafe(32))"   # gera a API_KEY
@@ -321,6 +354,19 @@ Duas particularidades desta base:
   de pagar por uma resposta que só poderia ser alucinada.
 - **Embeddings em lotes de 64** — menos round-trips na ingestão, sem estourar o
   limite de tokens por requisição do provedor.
+- **Limite de uso escrito à mão, sem dependência nova** — janela fixa em
+  memória (`app/core/rate_limit.py`). Com um worker só, uma dependência a mais
+  (e um Redis atrás dela) custaria mais do que resolve.
+- **Teto de gasto é global, teto de rajada é por cliente** — somar por cliente
+  não protegeria a fatura, que é uma só; e uma rajada de um cliente não deve
+  derrubar a experiência dos outros.
+- **A identidade do cliente entra nos logs como digest** — identificador de
+  cliente é escrito em disco; chave de API em texto claro no log é credencial
+  vazada.
+- **Corpo grande é cortado, não recusado com exceção** — quem lê o corpo é o
+  parser de multipart, que traduz qualquer erro para um `400` genérico. O
+  middleware encerra o stream e substitui a resposta, e o `413` deixa de
+  depender de como o parser reage a um corpo truncado.
 
 ## Limitações conhecidas
 
@@ -332,10 +378,14 @@ Duas particularidades desta base:
   diretamente. Um cross-encoder melhoraria a precisão do contexto.
 - **Trocar `EMBEDDING_DIM`** invalida todo o acervo: exige migração da coluna e
   reprocessamento dos documentos já ingeridos.
+- **Sem retenção automática:** documentos enviados numa demonstração pública
+  ficam no banco até serem apagados à mão.
+- **Sem erro agregado nem alerta de custo:** os logs são estruturados, mas nada
+  avisa quando o teto diário começa a ser batido com frequência.
 
 ## Roadmap
 
 - [x] Fase 1 — Docker, PostgreSQL + pgvector, esqueleto da API, CI
 - [x] Fase 2 — extração de PDF, chunking, embeddings, busca por similaridade e RAG
-- [ ] Fase 3 — [x] migrações Alembic · [x] autenticação por chave · [ ] ingestão assíncrona em background
+- [ ] Fase 3 — [x] migrações Alembic · [x] autenticação por chave · [x] limites de uso e de corpo · [ ] retenção do acervo · [ ] ingestão assíncrona em background
 - [ ] Fase 4 — reranking, busca híbrida (BM25 + vetorial), OCR
