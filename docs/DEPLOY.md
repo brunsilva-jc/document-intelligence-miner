@@ -82,8 +82,9 @@ dim.exemplo.com {
 ```
 
 > `dim_api` só resolve se o container do proxy estiver na rede `EDGE_NETWORK`.
-> Suba este projeto **antes** de recarregar o proxy — apontar para um nome que
-> não existe faz o Caddy recusar a config inteira.
+> A ordem, porém, não importa: medido, o Caddy carrega a config mesmo com o
+> upstream inexistente — os outros sites seguem servindo e só este hostname
+> devolve `502` até a aplicação subir.
 
 Os dois tetos — o do proxy e o da aplicação — **não** fazem a mesma coisa, e a
 diferença foi medida, não deduzida:
