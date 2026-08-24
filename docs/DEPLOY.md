@@ -73,21 +73,37 @@ Com um Caddy, o bloco correspondente é:
 ```caddyfile
 dim.exemplo.com {
 	encode gzip
-	# Segunda linha de defesa do tamanho de corpo. O middleware da aplicação
-	# também corta, mas só depois de os bytes atravessarem a rede.
+	# Ver a nota abaixo: este teto é para o corpo que NÃO declara tamanho.
 	request_body {
-		max_size 21MB
+		max_size 21000000
 	}
 	reverse_proxy dim_api:8000
 }
 ```
 
 > `dim_api` só resolve se o container do proxy estiver na rede `EDGE_NETWORK`.
-> Suba este projeto **antes** de recarregar o proxy — apontar para um nome que
-> não existe faz o Caddy recusar a config inteira.
+> A ordem, porém, não importa: medido, o Caddy carrega a config mesmo com o
+> upstream inexistente — os outros sites seguem servindo e só este hostname
+> devolve `502` até a aplicação subir.
 
-O `21MB` é `MAX_UPLOAD_SIZE_MB` mais a folga de enquadramento do multipart, o
-mesmo cálculo que o middleware faz. Ajuste os dois juntos.
+Os dois tetos — o do proxy e o da aplicação — **não** fazem a mesma coisa, e a
+diferença foi medida, não deduzida:
+
+| | corta quando | pega o quê |
+|---|---|---|
+| Aplicação (`MAX_UPLOAD_SIZE_MB` + folga = 21 MiB) | lê o `Content-Length`, **antes** de qualquer byte de corpo | o cliente honesto, que é o caso comum |
+| Caddy (`max_size`) | durante a **leitura** do corpo | corpo sem `Content-Length` (`chunked`) ou com tamanho mentido |
+
+Como a aplicação decide pelo cabeçalho, ela responde primeiro quando o tamanho
+vem declarado — e aí devolve o `413` com a mensagem precisa. Nesse caminho o
+Caddy ainda está escrevendo o corpo quando a aplicação responde e fecha a
+conexão, e **de vez em quando ele converte o resultado num `502`**. Em nenhum
+dos casos o corpo chega a ser lido; o que varia é só o código que o cliente vê,
+numa requisição que já estava sendo recusada.
+
+O `21000000` fica logo acima do maior upload legítimo (20 MiB = 20 971 520) e
+abaixo do teto da aplicação (22 020 096). Em bytes e não `21MB` porque `MB`
+decimal ou binário muda o número, e aqui a margem é estreita.
 
 ## 3. Subir
 
