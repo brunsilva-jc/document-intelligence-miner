@@ -8,9 +8,11 @@ relevantes do seu acervo — com citação das fontes.
 
 > **Status:** Fases 1 e 2 concluídas — infraestrutura, banco, ingestão com
 > chunking + embeddings e o motor de RAG completo. Da Fase 3 já entraram
-> **migrações Alembic**, **autenticação por chave de API** e **limites de
-> uso** (rajada, teto diário de gasto e teto de corpo da requisição), o que
-> torna o projeto implantável fora da máquina do desenvolvedor — veja
+> **migrações Alembic**, **autenticação por chave de API**, **limites de
+> uso** (rajada, teto diário de gasto e teto de corpo da requisição),
+> **retenção do acervo** e **observabilidade** (erro agregado + alerta de
+> custo), o que torna o projeto implantável fora da máquina
+> do desenvolvedor — veja
 > [`docs/DEPLOY.md`](docs/DEPLOY.md). Falta configurar a `OPENAI_API_KEY` para
 > usar `/ask` com um LLM real.
 
@@ -62,6 +64,7 @@ document-intelligence-miner/
 │   │   ├── security.py            # chave de API (header X-API-Key)
 │   │   ├── rate_limit.py          # tetos de rajada e de gasto diário
 │   │   ├── body_limit.py          # teto de corpo, antes de o corpo ser lido
+│   │   ├── observability.py       # erro agregado (Sentry) + alerta de custo
 │   │   └── logging.py
 │   ├── db/
 │   │   ├── base.py                # DeclarativeBase + TimestampMixin
@@ -75,7 +78,8 @@ document-intelligence-miner/
 │       ├── document_service.py    # pipeline de ingestão
 │       ├── document_processor.py  # extração de PDF/TXT + chunking
 │       ├── embeddings.py          # OpenAI / HuggingFace atrás de um Protocol
-│       └── rag_engine.py          # busca semântica + prompt + LLM
+│       ├── rag_engine.py          # busca semântica + prompt + LLM
+│       └── retention.py           # varredura periódica: idade + teto do acervo
 ├── docker/postgres/init.sql       # CREATE EXTENSION vector
 ├── docs/DEPLOY.md                 # subir num servidor com Docker
 ├── migrations/                    # Alembic: env.py + versions/
@@ -233,8 +237,12 @@ Todas as variáveis estão documentadas em `.env.example`. As mais relevantes:
 | `RETRIEVAL_TOP_K` | `4` | blocos enviados ao LLM |
 | `RETRIEVAL_MAX_DISTANCE` | `0.6` | corte de relevância (0 = idêntico) |
 | `RATE_LIMIT_REQUESTS` / `RATE_LIMIT_WINDOW_SECONDS` | `60` / `60` | rajada, por cliente |
-| `RATE_LIMIT_METERED_DAILY` | `200` | `/upload` + `/ask` por dia, **global** |
-| `MAX_UPLOAD_SIZE_MB` | `20` | tamanho do arquivo aceito |
+| `RATE_LIMIT_METERED_DAILY` | `50` | `/upload` + `/ask` por dia, **global** |
+| `RETENTION_MAX_AGE_DAYS` | `7` | idade máxima de um documento no acervo |
+| `RETENTION_MAX_DOCUMENTS` | `100` | teto do acervo; os mais antigos saem primeiro |
+| `SENTRY_DSN` | vazio | erro agregado; vazio = desligado (serve GlitchTip também) |
+| `COST_ALERT_THRESHOLD` | `0.8` | fração do teto diário que dispara alerta de custo |
+| `MAX_UPLOAD_SIZE_MB` | `5` | tamanho do arquivo aceito; é o teto de gasto que mais pesa |
 | `EDGE_NETWORK` | `edge` | rede do proxy reverso (só em produção) |
 
 Embeddings locais via HuggingFace (`sentence-transformers` + `torch`, ~2 GB)
@@ -281,6 +289,64 @@ teto de memória.
 Os contadores vivem em memória do processo: reiniciar zera o teto diário, e mais
 de um worker do uvicorn multiplicaria o teto pelo número de workers. O
 `Dockerfile` sobe um worker só de propósito.
+
+#### Retenção do acervo
+
+Os limites acima protegem a fatura. A retenção protege outra coisa: **quem
+enviou o arquivo**. Numa demonstração pública o documento é de um estranho — ou
+seja, dado de terceiro —, e guardá-lo indefinidamente porque ninguém escreveu a
+linha que o apaga também é uma decisão, só que tomada por omissão.
+
+| Regra | Padrão | O que pega |
+| --- | --- | --- |
+| `RETENTION_MAX_AGE_DAYS` | `7` | todo documento vence — é o limite de *por quanto tempo* |
+| `RETENTION_MAX_DOCUMENTS` | `100` | uma enxurrada na mesma janela, nova demais para vencer |
+
+A idade roda **antes** do teto, e o teto conta o que sobreviveu a ela — na ordem
+inversa, o teto apagaria por quota o que a idade já apagaria de graça. Apagar o
+documento leva os chunks junto (`ON DELETE CASCADE`), sem o que o `/ask`
+responderia citando trecho de arquivo já removido.
+
+A varredura roda numa tarefa de fundo do próprio processo
+(`app/services/retention.py`), iniciada no `lifespan`, com a primeira passada no
+boot: um processo que ficou dias fora do ar volta com documentos já vencidos, e
+esperar o primeiro intervalo seria guardar dado alheio justamente no caso em que
+ele já passou do prazo. Falha de varredura não derruba o laço — banco fora do ar
+adia a limpeza, não a cancela pelo resto da vida do processo.
+
+`RETENTION_ENABLED=false` desliga tudo, e o boot avisa em `WARNING`: sem a
+varredura, o acervo só é limpo à mão.
+
+#### Observabilidade
+
+Os logs estruturados respondem *o que aconteceu* para quem já está olhando.
+Isto responde outra coisa: **quem avisa**. Numa instância que roda sozinha num
+VPS, a única testemunha de um erro é o `docker logs` de quem lembrar de abrir —
+ou seja, ninguém, até um estranho reclamar.
+
+| Sinal | Como chega | Por quê |
+| --- | --- | --- |
+| Exceção não tratada | evento no Sentry, com stack e contexto | o handler global transforma tudo em 500 educado; sem captura explícita, o erro sai invisível |
+| Falha da varredura de retenção | `logger.exception` → evento (`LoggingIntegration`) | tarefa de fundo: ninguém está olhando quando ela falha |
+| Teto diário em `COST_ALERT_THRESHOLD` | `WARNING` + evento | é o sinal de que a demo virou alvo — e ele passa despercebido porque **nada falhou** |
+| Teto diário esgotado | `ERROR` + evento | uma vez por janela, não por requisição recusada |
+
+`SENTRY_DSN` vazio deixa o SDK inerte — nada é enviado, e a aplicação loga
+igual. O DSN é configurável de propósito: o mesmo protocolo serve o Sentry SaaS
+e um **GlitchTip** auto-hospedado.
+
+**O que não sai daqui.** Um relatório de erro carrega os cabeçalhos da
+requisição, e um deles é o `X-API-Key` da demo — mandá-lo para um serviço de
+terceiros vaza a credencial em silêncio. Daí `send_default_pii=False` e o filtro
+que apaga `X-API-Key`, `Authorization` e `Cookie`.
+
+Filtrar cabeçalho, porém, **não basta** — e isso foi medido, não suposto: com um
+coletor local no lugar do Sentry, a chave continuava saindo pelas **variáveis
+locais do stack trace**, porque os quadros de uma requisição ASGI carregam o
+`scope` inteiro, com os cabeçalhos crus em bytes. Daí
+`include_local_variables=False`. O custo é real (o painel deixa de mostrar o
+valor das variáveis no momento do erro), e vale mesmo assim: nesta aplicação os
+locais guardam também o texto extraído do PDF de um terceiro.
 
 ```bash
 python -c "import secrets; print(secrets.token_urlsafe(32))"   # gera a API_KEY
@@ -378,14 +444,16 @@ Duas particularidades desta base:
   diretamente. Um cross-encoder melhoraria a precisão do contexto.
 - **Trocar `EMBEDDING_DIM`** invalida todo o acervo: exige migração da coluna e
   reprocessamento dos documentos já ingeridos.
-- **Sem retenção automática:** documentos enviados numa demonstração pública
-  ficam no banco até serem apagados à mão.
-- **Sem erro agregado nem alerta de custo:** os logs são estruturados, mas nada
-  avisa quando o teto diário começa a ser batido com frequência.
+- **Retenção só por idade e quantidade:** não há quota por cliente nem por
+  tamanho total em disco, e um documento apagado ainda vive nos backups até o
+  dump que o contém sair pelo `BACKUP_RETENTION_DAYS`.
+- **Alerta sem histórico de custo:** o aviso diz que o teto está sendo
+  consumido, não quanto já se gastou em dólares — não há leitura da fatura do
+  provedor, e os contadores morrem com o processo.
 
 ## Roadmap
 
 - [x] Fase 1 — Docker, PostgreSQL + pgvector, esqueleto da API, CI
 - [x] Fase 2 — extração de PDF, chunking, embeddings, busca por similaridade e RAG
-- [ ] Fase 3 — [x] migrações Alembic · [x] autenticação por chave · [x] limites de uso e de corpo · [ ] retenção do acervo · [ ] ingestão assíncrona em background
+- [ ] Fase 3 — [x] migrações Alembic · [x] autenticação por chave · [x] limites de uso e de corpo · [x] retenção do acervo · [x] observabilidade · [ ] ingestão assíncrona em background
 - [ ] Fase 4 — reranking, busca híbrida (BM25 + vetorial), OCR

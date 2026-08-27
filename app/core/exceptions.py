@@ -98,6 +98,22 @@ def register_exception_handlers(app: FastAPI) -> None:
 
     @app.exception_handler(Exception)
     async def _unhandled_error_handler(request: Request, exc: Exception) -> JSONResponse:
+        # Import tardio: `observability` importa o SDK do Sentry, e este
+        # modulo e importado por quase todo o resto — inclusive por testes
+        # que nao querem o SDK na jogada.
+        from app.core.observability import relatar_excecao
+
+        # Este handler existe justamente para o erro NAO subir ate o
+        # middleware do SDK. Sem esta linha, todo 500 sairia bem formatado
+        # para o cliente e invisivel para quem mantem o servico.
+        #
+        # Vem ANTES do log, e a ordem foi medida: o `logger.exception`
+        # abaixo tambem viraria evento pela LoggingIntegration, e a
+        # DedupeIntegration (ligada por padrao) descarta o segundo evento
+        # da MESMA excecao. Quem chega primeiro vence. Logando primeiro,
+        # o evento que sobrevivia era o do log — e esta chamada, escrita
+        # de proposito, era a descartada.
+        relatar_excecao(exc)
         logger.exception("erro nao tratado em %s %s", request.method, request.url.path)
         return JSONResponse(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,

@@ -13,6 +13,11 @@ asyncpg==0.30.0                  # driver async do PostgreSQL
 pgvector==0.3.6                  # tipo Vector para SQLAlchemy
 alembic==1.14.0                  # migracoes (Fase 3)
 
+# ---- Observabilidade ----
+# DSN vazio deixa o SDK inerte: a dependencia entra na imagem, mas nada e
+# enviado. O protocolo e o mesmo do GlitchTip auto-hospedado.
+sentry-sdk[fastapi]==2.68.1
+
 # ---- IA / RAG (usado na Fase 2) ----
 langchain==0.3.13
 langchain-core==0.3.28

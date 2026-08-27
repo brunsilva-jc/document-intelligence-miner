@@ -103,6 +103,31 @@ class FakeDocumentRepository:
     async def delete(self, document_id: uuid.UUID) -> bool:
         return self.documents.pop(document_id, None) is not None
 
+    async def delete_older_than(self, cutoff: datetime) -> int:
+        vencidos = [doc_id for doc_id, doc in self.documents.items() if doc.created_at < cutoff]
+        return self._descartar(vencidos)
+
+    async def delete_beyond_limit(self, max_documents: int) -> int:
+        if max_documents < 1:
+            return 0
+        # Mesma ordem do repositorio real: mais recentes primeiro, com
+        # desempate por id. O que passa do teto e o excedente.
+        por_recencia = sorted(
+            self.documents.values(),
+            key=lambda doc: (doc.created_at, doc.id.bytes),
+            reverse=True,
+        )
+        return self._descartar([doc.id for doc in por_recencia[max_documents:]])
+
+    def _descartar(self, document_ids: list[uuid.UUID]) -> int:
+        """Apaga documentos e, em cascata, seus chunks — como o ON DELETE
+        CASCADE do banco faz no repositorio real."""
+        for doc_id in document_ids:
+            del self.documents[doc_id]
+        alvos = set(document_ids)
+        self.chunks = [chunk for chunk in self.chunks if chunk.document_id not in alvos]
+        return len(document_ids)
+
     async def add_chunks(self, chunks) -> int:
         self.chunks.extend(chunks)
         return len(chunks)
@@ -133,6 +158,7 @@ def make_document(
     status: DocumentStatus = DocumentStatus.COMPLETED,
     chunk_count: int = 0,
     metadata: dict | None = None,
+    created_at: datetime | None = None,
 ) -> Document:
     """Document ORM valido fora de sessao (timestamps preenchidos na mao)."""
     document = Document(
@@ -145,7 +171,7 @@ def make_document(
         chunk_count=chunk_count,
         doc_metadata=metadata or {},
     )
-    now = datetime.now(UTC)
+    now = created_at or datetime.now(UTC)
     document.created_at = now
     document.updated_at = now
     return document

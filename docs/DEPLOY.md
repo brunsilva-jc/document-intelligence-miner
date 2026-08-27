@@ -50,8 +50,35 @@ faz sentido depende de quanto você aceita gastar por dia:
 | Variável | Padrão | O que limita |
 |---|---|---|
 | `RATE_LIMIT_REQUESTS` / `RATE_LIMIT_WINDOW_SECONDS` | `60` / `60` | rajada, por cliente |
-| `RATE_LIMIT_METERED_DAILY` | `200` | `/upload` + `/ask` por dia, **global** |
-| `MAX_UPLOAD_SIZE_MB` | `20` | tamanho do arquivo |
+| `RATE_LIMIT_METERED_DAILY` | `50` | `/upload` + `/ask` por dia, **global** |
+| `MAX_UPLOAD_SIZE_MB` | `5` | tamanho do arquivo — o teto de gasto que mais pesa |
+
+E os da retenção, que não protegem a fatura e sim quem enviou o arquivo — numa
+instância pública, documento de estranho é dado de terceiro:
+
+| Variável | Padrão | O que faz |
+|---|---|---|
+| `RETENTION_MAX_AGE_DAYS` | `7` | idade em que um documento é apagado, com seus chunks |
+| `RETENTION_MAX_DOCUMENTS` | `100` | teto do acervo; os mais antigos saem primeiro |
+| `RETENTION_SWEEP_INTERVAL_SECONDS` | `3600` | intervalo entre varreduras (a 1ª é no boot) |
+
+A varredura é uma tarefa de fundo do próprio processo da API — não precisa de
+entrada no cron. `RETENTION_ENABLED=false` desliga, e o boot registra um
+`WARNING` dizendo que o acervo passa a depender de limpeza manual.
+
+E os da observabilidade — sem eles a instância roda muda, e a única testemunha
+de um erro é o `docker logs` de quem lembrar de abrir:
+
+| Variável | Padrão | O que faz |
+|---|---|---|
+| `SENTRY_DSN` | vazio | destino dos eventos de erro; vazio = desligado |
+| `SENTRY_TRACES_SAMPLE_RATE` | `0.0` | fração de requisições com tracing |
+| `COST_ALERT_THRESHOLD` | `0.8` | fração do teto diário que vira alerta de custo |
+
+O DSN aceita tanto o Sentry SaaS quanto um **GlitchTip** auto-hospedado, que
+fala o mesmo protocolo — útil se preferir não mandar erro nenhum para fora da
+máquina. Os eventos saem sem PII e sem variáveis locais; veja o porquê no
+README, em *Observabilidade*.
 
 ## 2. A rede do proxy reverso
 
@@ -75,7 +102,7 @@ dim.exemplo.com {
 	encode gzip
 	# Ver a nota abaixo: este teto é para o corpo que NÃO declara tamanho.
 	request_body {
-		max_size 21000000
+		max_size 5500000
 	}
 	reverse_proxy dim_api:8000
 }
@@ -91,7 +118,7 @@ diferença foi medida, não deduzida:
 
 | | corta quando | pega o quê |
 |---|---|---|
-| Aplicação (`MAX_UPLOAD_SIZE_MB` + folga = 21 MiB) | lê o `Content-Length`, **antes** de qualquer byte de corpo | o cliente honesto, que é o caso comum |
+| Aplicação (`MAX_UPLOAD_SIZE_MB` + folga = 6 MiB) | lê o `Content-Length`, **antes** de qualquer byte de corpo | o cliente honesto, que é o caso comum |
 | Caddy (`max_size`) | durante a **leitura** do corpo | corpo sem `Content-Length` (`chunked`) ou com tamanho mentido |
 
 Como a aplicação decide pelo cabeçalho, ela responde primeiro quando o tamanho
@@ -101,9 +128,14 @@ conexão, e **de vez em quando ele converte o resultado num `502`**. Em nenhum
 dos casos o corpo chega a ser lido; o que varia é só o código que o cliente vê,
 numa requisição que já estava sendo recusada.
 
-O `21000000` fica logo acima do maior upload legítimo (20 MiB = 20 971 520) e
-abaixo do teto da aplicação (22 020 096). Em bytes e não `21MB` porque `MB`
+O `5500000` fica logo acima do maior upload legítimo (5 MiB = 5 242 880) e
+abaixo do teto da aplicação (6 291 456). Em bytes e não `5MB` porque `MB`
 decimal ou binário muda o número, e aqui a margem é estreita.
+
+> **Ao mudar `MAX_UPLOAD_SIZE_MB`, mude o `max_size` do Caddy junto.** Se o
+> teto do proxy ficar acima do da aplicação, o corpo grande demais viaja
+> inteiro só para ser recusado no fim; se ficar abaixo, o upload legítimo
+> morre no proxy com uma mensagem que não é a sua.
 
 ## 3. Subir
 
@@ -135,6 +167,14 @@ curl -so /dev/null -w '%{http_code}\n' \
 # 404 — a documentação interativa não existe em produção
 curl -so /dev/null -w '%{http_code}\n' https://dim.exemplo.com/docs
 
+# a retenção subiu junto com a API (uma linha por boot)
+docker logs dim_api 2>&1 | grep -i retencao
+# retencao ligada: 7 dia(s) de idade, teto de 100 documentos, varredura a cada 3600s
+
+# a observabilidade subiu (ou avisa que está desligada)
+docker logs dim_api 2>&1 | grep -i sentry
+# sentry ligado (env=production, traces=0.0)
+
 # 429 depois de passar do teto — o limite de uso está ativo
 for _ in $(seq 70); do
   curl -so /dev/null -w '%{http_code} ' -H "X-API-Key: $API_KEY" \
@@ -161,6 +201,12 @@ docker ps --format '{{.Names}}\t{{.Ports}}' | grep dim_
 Configurável por ambiente: `BACKUP_DIR`, `BACKUP_RETENTION_DAYS` (14) e
 `BACKUP_REMOTE` — um destino `rclone`, sem o qual a cópia fica no mesmo disco do
 banco, que é justamente o que costuma falhar.
+
+Vale notar a tensão com a retenção do acervo: um documento apagado pela
+varredura continua dentro dos dumps já feitos até o último deles sair pela
+rotação. Na prática o prazo real de guarda é `RETENTION_MAX_AGE_DAYS` +
+`BACKUP_RETENTION_DAYS`. Se o compromisso publicado for o prazo curto, é
+`BACKUP_RETENTION_DAYS` que precisa encolher.
 
 **Teste a restauração antes de precisar dela:**
 

@@ -48,9 +48,35 @@ class Settings(BaseSettings):
     RATE_LIMIT_REQUESTS: int = Field(default=60, ge=1)
     RATE_LIMIT_WINDOW_SECONDS: int = Field(default=60, ge=1)
     # Teto das rotas que gastam tokens (/upload e /ask). Global, porque o
-    # que se protege e uma fatura so.
-    RATE_LIMIT_METERED_DAILY: int = Field(default=200, ge=1)
+    # que se protege e uma fatura so. 50/dia sobra para uma demo de
+    # portfolio e mantem o pior caso do mes abaixo do teto da conta.
+    RATE_LIMIT_METERED_DAILY: int = Field(default=50, ge=1)
     RATE_LIMIT_METERED_WINDOW_SECONDS: int = Field(default=86_400, ge=1)
+
+    # ---- Observabilidade ----
+    # Sem isto, a unica testemunha de um erro em producao e o `docker logs`
+    # de quem lembrar de olhar. DSN vazio desliga o envio e nao quebra nada:
+    # a aplicacao continua logando igual.
+    SENTRY_DSN: str | None = None
+    # Fracao de requisicoes com tracing. 0.0 = so erros, que e o que uma
+    # demo precisa; performance aqui nao paga o volume de eventos.
+    SENTRY_TRACES_SAMPLE_RATE: float = Field(default=0.0, ge=0.0, le=1.0)
+    # Fracao do teto diario a partir da qual o consumo vira alerta. O teto
+    # em si ja e tarde: quando ele bate, a demo passou o dia inteiro sendo
+    # usada por alguem e so agora alguem fica sabendo.
+    COST_ALERT_THRESHOLD: float = Field(default=0.8, gt=0.0, le=1.0)
+
+    # ---- Retencao do acervo ----
+    # A demo e publica: quem sobe documento deixa dado de terceiro no banco.
+    # Nada aqui protege a fatura — protege quem enviou o arquivo, e o disco.
+    RETENTION_ENABLED: bool = True
+    # Idade maxima de um documento. Vencido, ele e apagado com seus chunks.
+    RETENTION_MAX_AGE_DAYS: int = Field(default=7, ge=1)
+    # Teto de documentos no acervo: passando disso, os mais antigos saem
+    # primeiro. E o limite que segura uma enxurrada dentro da mesma janela.
+    RETENTION_MAX_DOCUMENTS: int = Field(default=100, ge=1)
+    # De quanto em quanto tempo a varredura roda. A primeira e no boot.
+    RETENTION_SWEEP_INTERVAL_SECONDS: int = Field(default=3_600, ge=60)
 
     # ---- Banco de dados ----
     POSTGRES_HOST: str = "localhost"
@@ -63,7 +89,11 @@ class Settings(BaseSettings):
     DB_MAX_OVERFLOW: int = 10
 
     # ---- Ingestao ----
-    MAX_UPLOAD_SIZE_MB: int = 20
+    # O tamanho do arquivo e o que de fato limita o gasto: o /upload embeda
+    # o documento INTEIRO, e um .txt de 20 MB (texto puro, sem a gordura de
+    # um PDF) custava sozinho ~6M tokens de embedding. 5 MB e generoso para
+    # uma demo e corta o pior caso em 4x.
+    MAX_UPLOAD_SIZE_MB: int = 5
     CHUNK_SIZE: int = 1000
     CHUNK_OVERLAP: int = 150
 

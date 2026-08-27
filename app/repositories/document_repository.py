@@ -8,6 +8,7 @@ regra de negocio e testar services com um fake de repositorio.
 import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass
+from datetime import datetime
 
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -96,6 +97,44 @@ class DocumentRepository:
         stmt = delete(Document).where(Document.id == document_id)
         result = await self._session.execute(stmt)
         return bool(result.rowcount)
+
+    async def delete_older_than(self, cutoff: datetime) -> int:
+        """Apaga todo documento criado antes de `cutoff`. Devolve quantos.
+
+        DELETE em massa, sem carregar objeto nenhum na sessao: a remocao
+        dos chunks fica por conta do `ON DELETE CASCADE` da chave
+        estrangeira, e nao do ORM. Varrer o acervo inteiro para dentro da
+        memoria so para apaga-lo seria trabalho jogado fora.
+        """
+        stmt = delete(Document).where(Document.created_at < cutoff)
+        result = await self._session.execute(stmt)
+        return result.rowcount or 0
+
+    async def delete_beyond_limit(self, max_documents: int) -> int:
+        """Mantem os `max_documents` mais recentes e apaga o resto.
+
+        O subselect e a lista de sobreviventes, e o DELETE apaga quem
+        ficou de fora dela. Escrito nessa ordem de proposito: um erro no
+        `ORDER BY` desta consulta apaga acervo alheio, entao ela precisa
+        dizer em voz alta o que PRESERVA.
+
+        O desempate por `id` nao e detalhe: dois documentos com o mesmo
+        `created_at` (mesmo segundo, mesmo lote) deixariam a ordem a
+        criterio do banco, e o teto passaria a apagar um ou outro a cada
+        varredura.
+        """
+        if max_documents < 1:
+            return 0
+
+        preservados = (
+            select(Document.id)
+            .order_by(Document.created_at.desc(), Document.id.desc())
+            .limit(max_documents)
+            .scalar_subquery()
+        )
+        stmt = delete(Document).where(Document.id.not_in(preservados))
+        result = await self._session.execute(stmt)
+        return result.rowcount or 0
 
     # ---------------- DocumentChunk ----------------
 
