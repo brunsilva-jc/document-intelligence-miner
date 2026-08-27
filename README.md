@@ -8,9 +8,10 @@ relevantes do seu acervo — com citação das fontes.
 
 > **Status:** Fases 1 e 2 concluídas — infraestrutura, banco, ingestão com
 > chunking + embeddings e o motor de RAG completo. Da Fase 3 já entraram
-> **migrações Alembic**, **autenticação por chave de API** e **limites de
-> uso** (rajada, teto diário de gasto e teto de corpo da requisição), o que
-> torna o projeto implantável fora da máquina do desenvolvedor — veja
+> **migrações Alembic**, **autenticação por chave de API**, **limites de
+> uso** (rajada, teto diário de gasto e teto de corpo da requisição) e
+> **retenção do acervo**, o que torna o projeto implantável fora da máquina
+> do desenvolvedor — veja
 > [`docs/DEPLOY.md`](docs/DEPLOY.md). Falta configurar a `OPENAI_API_KEY` para
 > usar `/ask` com um LLM real.
 
@@ -75,7 +76,8 @@ document-intelligence-miner/
 │       ├── document_service.py    # pipeline de ingestão
 │       ├── document_processor.py  # extração de PDF/TXT + chunking
 │       ├── embeddings.py          # OpenAI / HuggingFace atrás de um Protocol
-│       └── rag_engine.py          # busca semântica + prompt + LLM
+│       ├── rag_engine.py          # busca semântica + prompt + LLM
+│       └── retention.py           # varredura periódica: idade + teto do acervo
 ├── docker/postgres/init.sql       # CREATE EXTENSION vector
 ├── docs/DEPLOY.md                 # subir num servidor com Docker
 ├── migrations/                    # Alembic: env.py + versions/
@@ -234,6 +236,8 @@ Todas as variáveis estão documentadas em `.env.example`. As mais relevantes:
 | `RETRIEVAL_MAX_DISTANCE` | `0.6` | corte de relevância (0 = idêntico) |
 | `RATE_LIMIT_REQUESTS` / `RATE_LIMIT_WINDOW_SECONDS` | `60` / `60` | rajada, por cliente |
 | `RATE_LIMIT_METERED_DAILY` | `200` | `/upload` + `/ask` por dia, **global** |
+| `RETENTION_MAX_AGE_DAYS` | `7` | idade máxima de um documento no acervo |
+| `RETENTION_MAX_DOCUMENTS` | `100` | teto do acervo; os mais antigos saem primeiro |
 | `MAX_UPLOAD_SIZE_MB` | `20` | tamanho do arquivo aceito |
 | `EDGE_NETWORK` | `edge` | rede do proxy reverso (só em produção) |
 
@@ -281,6 +285,33 @@ teto de memória.
 Os contadores vivem em memória do processo: reiniciar zera o teto diário, e mais
 de um worker do uvicorn multiplicaria o teto pelo número de workers. O
 `Dockerfile` sobe um worker só de propósito.
+
+#### Retenção do acervo
+
+Os limites acima protegem a fatura. A retenção protege outra coisa: **quem
+enviou o arquivo**. Numa demonstração pública o documento é de um estranho — ou
+seja, dado de terceiro —, e guardá-lo indefinidamente porque ninguém escreveu a
+linha que o apaga também é uma decisão, só que tomada por omissão.
+
+| Regra | Padrão | O que pega |
+| --- | --- | --- |
+| `RETENTION_MAX_AGE_DAYS` | `7` | todo documento vence — é o limite de *por quanto tempo* |
+| `RETENTION_MAX_DOCUMENTS` | `100` | uma enxurrada na mesma janela, nova demais para vencer |
+
+A idade roda **antes** do teto, e o teto conta o que sobreviveu a ela — na ordem
+inversa, o teto apagaria por quota o que a idade já apagaria de graça. Apagar o
+documento leva os chunks junto (`ON DELETE CASCADE`), sem o que o `/ask`
+responderia citando trecho de arquivo já removido.
+
+A varredura roda numa tarefa de fundo do próprio processo
+(`app/services/retention.py`), iniciada no `lifespan`, com a primeira passada no
+boot: um processo que ficou dias fora do ar volta com documentos já vencidos, e
+esperar o primeiro intervalo seria guardar dado alheio justamente no caso em que
+ele já passou do prazo. Falha de varredura não derruba o laço — banco fora do ar
+adia a limpeza, não a cancela pelo resto da vida do processo.
+
+`RETENTION_ENABLED=false` desliga tudo, e o boot avisa em `WARNING`: sem a
+varredura, o acervo só é limpo à mão.
 
 ```bash
 python -c "import secrets; print(secrets.token_urlsafe(32))"   # gera a API_KEY
@@ -378,8 +409,9 @@ Duas particularidades desta base:
   diretamente. Um cross-encoder melhoraria a precisão do contexto.
 - **Trocar `EMBEDDING_DIM`** invalida todo o acervo: exige migração da coluna e
   reprocessamento dos documentos já ingeridos.
-- **Sem retenção automática:** documentos enviados numa demonstração pública
-  ficam no banco até serem apagados à mão.
+- **Retenção só por idade e quantidade:** não há quota por cliente nem por
+  tamanho total em disco, e um documento apagado ainda vive nos backups até o
+  dump que o contém sair pelo `BACKUP_RETENTION_DAYS`.
 - **Sem erro agregado nem alerta de custo:** os logs são estruturados, mas nada
   avisa quando o teto diário começa a ser batido com frequência.
 
@@ -387,5 +419,5 @@ Duas particularidades desta base:
 
 - [x] Fase 1 — Docker, PostgreSQL + pgvector, esqueleto da API, CI
 - [x] Fase 2 — extração de PDF, chunking, embeddings, busca por similaridade e RAG
-- [ ] Fase 3 — [x] migrações Alembic · [x] autenticação por chave · [x] limites de uso e de corpo · [ ] retenção do acervo · [ ] ingestão assíncrona em background
+- [ ] Fase 3 — [x] migrações Alembic · [x] autenticação por chave · [x] limites de uso e de corpo · [x] retenção do acervo · [ ] ingestão assíncrona em background
 - [ ] Fase 4 — reranking, busca híbrida (BM25 + vetorial), OCR

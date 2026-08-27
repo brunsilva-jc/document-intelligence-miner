@@ -52,6 +52,18 @@ class Settings(BaseSettings):
     RATE_LIMIT_METERED_DAILY: int = Field(default=200, ge=1)
     RATE_LIMIT_METERED_WINDOW_SECONDS: int = Field(default=86_400, ge=1)
 
+    # ---- Retencao do acervo ----
+    # A demo e publica: quem sobe documento deixa dado de terceiro no banco.
+    # Nada aqui protege a fatura — protege quem enviou o arquivo, e o disco.
+    RETENTION_ENABLED: bool = True
+    # Idade maxima de um documento. Vencido, ele e apagado com seus chunks.
+    RETENTION_MAX_AGE_DAYS: int = Field(default=7, ge=1)
+    # Teto de documentos no acervo: passando disso, os mais antigos saem
+    # primeiro. E o limite que segura uma enxurrada dentro da mesma janela.
+    RETENTION_MAX_DOCUMENTS: int = Field(default=100, ge=1)
+    # De quanto em quanto tempo a varredura roda. A primeira e no boot.
+    RETENTION_SWEEP_INTERVAL_SECONDS: int = Field(default=3_600, ge=60)
+
     # ---- Banco de dados ----
     POSTGRES_HOST: str = "localhost"
     POSTGRES_PORT: int = 5432

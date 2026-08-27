@@ -53,6 +53,19 @@ faz sentido depende de quanto você aceita gastar por dia:
 | `RATE_LIMIT_METERED_DAILY` | `200` | `/upload` + `/ask` por dia, **global** |
 | `MAX_UPLOAD_SIZE_MB` | `20` | tamanho do arquivo |
 
+E os da retenção, que não protegem a fatura e sim quem enviou o arquivo — numa
+instância pública, documento de estranho é dado de terceiro:
+
+| Variável | Padrão | O que faz |
+|---|---|---|
+| `RETENTION_MAX_AGE_DAYS` | `7` | idade em que um documento é apagado, com seus chunks |
+| `RETENTION_MAX_DOCUMENTS` | `100` | teto do acervo; os mais antigos saem primeiro |
+| `RETENTION_SWEEP_INTERVAL_SECONDS` | `3600` | intervalo entre varreduras (a 1ª é no boot) |
+
+A varredura é uma tarefa de fundo do próprio processo da API — não precisa de
+entrada no cron. `RETENTION_ENABLED=false` desliga, e o boot registra um
+`WARNING` dizendo que o acervo passa a depender de limpeza manual.
+
 ## 2. A rede do proxy reverso
 
 Só um processo pode escutar na porta 443, então o proxy é infraestrutura da
@@ -135,6 +148,10 @@ curl -so /dev/null -w '%{http_code}\n' \
 # 404 — a documentação interativa não existe em produção
 curl -so /dev/null -w '%{http_code}\n' https://dim.exemplo.com/docs
 
+# a retenção subiu junto com a API (uma linha por boot)
+docker logs dim_api 2>&1 | grep -i retencao
+# retencao ligada: 7 dia(s) de idade, teto de 100 documentos, varredura a cada 3600s
+
 # 429 depois de passar do teto — o limite de uso está ativo
 for _ in $(seq 70); do
   curl -so /dev/null -w '%{http_code} ' -H "X-API-Key: $API_KEY" \
@@ -161,6 +178,12 @@ docker ps --format '{{.Names}}\t{{.Ports}}' | grep dim_
 Configurável por ambiente: `BACKUP_DIR`, `BACKUP_RETENTION_DAYS` (14) e
 `BACKUP_REMOTE` — um destino `rclone`, sem o qual a cópia fica no mesmo disco do
 banco, que é justamente o que costuma falhar.
+
+Vale notar a tensão com a retenção do acervo: um documento apagado pela
+varredura continua dentro dos dumps já feitos até o último deles sair pela
+rotação. Na prática o prazo real de guarda é `RETENTION_MAX_AGE_DAYS` +
+`BACKUP_RETENTION_DAYS`. Se o compromisso publicado for o prazo curto, é
+`BACKUP_RETENTION_DAYS` que precisa encolher.
 
 **Teste a restauração antes de precisar dela:**
 

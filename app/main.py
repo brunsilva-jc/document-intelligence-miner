@@ -13,6 +13,10 @@ from app.core.config import settings
 from app.core.exceptions import register_exception_handlers
 from app.core.logging import get_logger, setup_logging
 from app.db.session import dispose_engine, init_db
+from app.services.retention import (
+    encerrar_rotina_de_retencao,
+    iniciar_rotina_de_retencao,
+)
 
 logger = get_logger(__name__)
 
@@ -23,7 +27,12 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     setup_logging()
     logger.info("iniciando %s (env=%s)", settings.PROJECT_NAME, settings.ENVIRONMENT)
     await init_db()
+    # Depois do `init_db`: a primeira varredura acontece no boot, e varrer
+    # antes de conferir o schema seria varrer um banco que pode nem ter as
+    # tabelas.
+    retencao = iniciar_rotina_de_retencao()
     yield
+    await encerrar_rotina_de_retencao(retencao)
     await dispose_engine()
     logger.info("aplicacao finalizada")
 
