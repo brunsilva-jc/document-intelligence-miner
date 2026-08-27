@@ -25,7 +25,8 @@ logger = get_logger(__name__)
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     """Recursos com ciclo de vida atrelado ao da aplicacao."""
-    setup_logging()
+    # O logging ja foi configurado em `create_app()`, que roda antes deste
+    # ponto — ver o comentario la.
     logger.info("iniciando %s (env=%s)", settings.PROJECT_NAME, settings.ENVIRONMENT)
     await init_db()
     # Depois do `init_db`: a primeira varredura acontece no boot, e varrer
@@ -40,6 +41,16 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
 
 def create_app() -> FastAPI:
     """Application factory — facilita testes e multiplas configuracoes."""
+    # PRIMEIRA linha da funcao, e por um motivo medido em producao: o
+    # `setup_logging` vivia no `lifespan`, que so roda quando o servidor
+    # sobe — depois desta funcao inteira. Tudo que era logado durante a
+    # construcao da aplicacao caia num root logger sem handler e sumia em
+    # silencio, porque o `lastResort` do modulo `logging` so imprime
+    # WARNING para cima. Foi assim que a linha de status do Sentry nunca
+    # apareceu no boot, e o passo de conferencia do docs/DEPLOY.md que a
+    # procurava nao tinha como funcionar.
+    setup_logging()
+
     # Antes de instanciar o FastAPI: as integracoes do Sentry instrumentam
     # o Starlette no momento do `init`, e uma aplicacao ja construida nao
     # seria alcancada por elas.

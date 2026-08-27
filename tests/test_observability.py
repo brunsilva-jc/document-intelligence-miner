@@ -8,6 +8,7 @@ credencial da demo. Mandar isso para um servico de terceiros e vazar a
 chave de graca, em silencio.
 """
 
+import logging
 from collections.abc import Iterator
 
 import pytest
@@ -25,6 +26,7 @@ from app.core.observability import (
 )
 from app.core.rate_limit import LimitadorJanelaFixa
 from app.core.security import API_KEY_HEADER_NAME
+from app.main import create_app
 
 
 # --------------------------------------------------------------------------
@@ -291,3 +293,41 @@ def test_alertar_custo_envia_mensagem(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_cabecalho_filtrado_cobre_o_header_real_da_api() -> None:
     """Trava contra renomear o header e esquecer do filtro."""
     assert API_KEY_HEADER_NAME.lower() in observability.CABECALHOS_FILTRADOS
+
+
+# --------------------------------------------------------------------------
+# Bootstrap: a ordem que fez a linha de status sumir
+# --------------------------------------------------------------------------
+def test_logging_e_configurado_antes_da_observabilidade(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regressao de um defeito visto em producao.
+
+    O `setup_logging` vivia no `lifespan`, que roda depois de `create_app()`
+    inteira. A linha de status do Sentry, emitida durante a construcao, caia
+    num root logger sem handler e sumia — o `lastResort` do `logging` so
+    imprime WARNING para cima. O passo de conferencia do docs/DEPLOY.md que
+    procurava essa linha nao tinha como funcionar.
+    """
+    ordem: list[str] = []
+    monkeypatch.setattr("app.main.setup_logging", lambda: ordem.append("logging"))
+    monkeypatch.setattr(
+        "app.main.configurar_observabilidade", lambda: ordem.append("observabilidade")
+    )
+
+    create_app()
+
+    assert ordem == ["logging", "observabilidade"]
+
+
+def test_create_app_deixa_o_root_logger_com_handler() -> None:
+    """Sem handler no root, todo log abaixo de WARNING e descartado em
+    silencio — inclusive os INFO de boot que dizem o que subiu."""
+    root = logging.getLogger()
+    handlers_originais = root.handlers[:]
+    root.handlers.clear()
+    try:
+        create_app()
+        assert root.handlers, "create_app() precisa configurar o logging"
+    finally:
+        root.handlers[:] = handlers_originais
