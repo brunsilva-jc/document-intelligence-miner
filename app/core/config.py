@@ -48,8 +48,9 @@ class Settings(BaseSettings):
     RATE_LIMIT_REQUESTS: int = Field(default=60, ge=1)
     RATE_LIMIT_WINDOW_SECONDS: int = Field(default=60, ge=1)
     # Teto das rotas que gastam tokens (/upload e /ask). Global, porque o
-    # que se protege e uma fatura so.
-    RATE_LIMIT_METERED_DAILY: int = Field(default=200, ge=1)
+    # que se protege e uma fatura so. 50/dia sobra para uma demo de
+    # portfolio e mantem o pior caso do mes abaixo do teto da conta.
+    RATE_LIMIT_METERED_DAILY: int = Field(default=50, ge=1)
     RATE_LIMIT_METERED_WINDOW_SECONDS: int = Field(default=86_400, ge=1)
 
     # ---- Observabilidade ----
@@ -88,7 +89,11 @@ class Settings(BaseSettings):
     DB_MAX_OVERFLOW: int = 10
 
     # ---- Ingestao ----
-    MAX_UPLOAD_SIZE_MB: int = 20
+    # O tamanho do arquivo e o que de fato limita o gasto: o /upload embeda
+    # o documento INTEIRO, e um .txt de 20 MB (texto puro, sem a gordura de
+    # um PDF) custava sozinho ~6M tokens de embedding. 5 MB e generoso para
+    # uma demo e corta o pior caso em 4x.
+    MAX_UPLOAD_SIZE_MB: int = 5
     CHUNK_SIZE: int = 1000
     CHUNK_OVERLAP: int = 150
 

@@ -50,8 +50,8 @@ faz sentido depende de quanto você aceita gastar por dia:
 | Variável | Padrão | O que limita |
 |---|---|---|
 | `RATE_LIMIT_REQUESTS` / `RATE_LIMIT_WINDOW_SECONDS` | `60` / `60` | rajada, por cliente |
-| `RATE_LIMIT_METERED_DAILY` | `200` | `/upload` + `/ask` por dia, **global** |
-| `MAX_UPLOAD_SIZE_MB` | `20` | tamanho do arquivo |
+| `RATE_LIMIT_METERED_DAILY` | `50` | `/upload` + `/ask` por dia, **global** |
+| `MAX_UPLOAD_SIZE_MB` | `5` | tamanho do arquivo — o teto de gasto que mais pesa |
 
 E os da retenção, que não protegem a fatura e sim quem enviou o arquivo — numa
 instância pública, documento de estranho é dado de terceiro:
@@ -102,7 +102,7 @@ dim.exemplo.com {
 	encode gzip
 	# Ver a nota abaixo: este teto é para o corpo que NÃO declara tamanho.
 	request_body {
-		max_size 21000000
+		max_size 5500000
 	}
 	reverse_proxy dim_api:8000
 }
@@ -118,7 +118,7 @@ diferença foi medida, não deduzida:
 
 | | corta quando | pega o quê |
 |---|---|---|
-| Aplicação (`MAX_UPLOAD_SIZE_MB` + folga = 21 MiB) | lê o `Content-Length`, **antes** de qualquer byte de corpo | o cliente honesto, que é o caso comum |
+| Aplicação (`MAX_UPLOAD_SIZE_MB` + folga = 6 MiB) | lê o `Content-Length`, **antes** de qualquer byte de corpo | o cliente honesto, que é o caso comum |
 | Caddy (`max_size`) | durante a **leitura** do corpo | corpo sem `Content-Length` (`chunked`) ou com tamanho mentido |
 
 Como a aplicação decide pelo cabeçalho, ela responde primeiro quando o tamanho
@@ -128,9 +128,14 @@ conexão, e **de vez em quando ele converte o resultado num `502`**. Em nenhum
 dos casos o corpo chega a ser lido; o que varia é só o código que o cliente vê,
 numa requisição que já estava sendo recusada.
 
-O `21000000` fica logo acima do maior upload legítimo (20 MiB = 20 971 520) e
-abaixo do teto da aplicação (22 020 096). Em bytes e não `21MB` porque `MB`
+O `5500000` fica logo acima do maior upload legítimo (5 MiB = 5 242 880) e
+abaixo do teto da aplicação (6 291 456). Em bytes e não `5MB` porque `MB`
 decimal ou binário muda o número, e aqui a margem é estreita.
+
+> **Ao mudar `MAX_UPLOAD_SIZE_MB`, mude o `max_size` do Caddy junto.** Se o
+> teto do proxy ficar acima do da aplicação, o corpo grande demais viaja
+> inteiro só para ser recusado no fim; se ficar abaixo, o upload legítimo
+> morre no proxy com uma mensagem que não é a sua.
 
 ## 3. Subir
 

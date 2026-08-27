@@ -237,12 +237,12 @@ Todas as variáveis estão documentadas em `.env.example`. As mais relevantes:
 | `RETRIEVAL_TOP_K` | `4` | blocos enviados ao LLM |
 | `RETRIEVAL_MAX_DISTANCE` | `0.6` | corte de relevância (0 = idêntico) |
 | `RATE_LIMIT_REQUESTS` / `RATE_LIMIT_WINDOW_SECONDS` | `60` / `60` | rajada, por cliente |
-| `RATE_LIMIT_METERED_DAILY` | `200` | `/upload` + `/ask` por dia, **global** |
+| `RATE_LIMIT_METERED_DAILY` | `50` | `/upload` + `/ask` por dia, **global** |
 | `RETENTION_MAX_AGE_DAYS` | `7` | idade máxima de um documento no acervo |
 | `RETENTION_MAX_DOCUMENTS` | `100` | teto do acervo; os mais antigos saem primeiro |
 | `SENTRY_DSN` | vazio | erro agregado; vazio = desligado (serve GlitchTip também) |
 | `COST_ALERT_THRESHOLD` | `0.8` | fração do teto diário que dispara alerta de custo |
-| `MAX_UPLOAD_SIZE_MB` | `20` | tamanho do arquivo aceito |
+| `MAX_UPLOAD_SIZE_MB` | `5` | tamanho do arquivo aceito; é o teto de gasto que mais pesa |
 | `EDGE_NETWORK` | `edge` | rede do proxy reverso (só em produção) |
 
 Embeddings locais via HuggingFace (`sentence-transformers` + `torch`, ~2 GB)
