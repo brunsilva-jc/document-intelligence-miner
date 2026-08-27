@@ -52,6 +52,19 @@ class Settings(BaseSettings):
     RATE_LIMIT_METERED_DAILY: int = Field(default=200, ge=1)
     RATE_LIMIT_METERED_WINDOW_SECONDS: int = Field(default=86_400, ge=1)
 
+    # ---- Observabilidade ----
+    # Sem isto, a unica testemunha de um erro em producao e o `docker logs`
+    # de quem lembrar de olhar. DSN vazio desliga o envio e nao quebra nada:
+    # a aplicacao continua logando igual.
+    SENTRY_DSN: str | None = None
+    # Fracao de requisicoes com tracing. 0.0 = so erros, que e o que uma
+    # demo precisa; performance aqui nao paga o volume de eventos.
+    SENTRY_TRACES_SAMPLE_RATE: float = Field(default=0.0, ge=0.0, le=1.0)
+    # Fracao do teto diario a partir da qual o consumo vira alerta. O teto
+    # em si ja e tarde: quando ele bate, a demo passou o dia inteiro sendo
+    # usada por alguem e so agora alguem fica sabendo.
+    COST_ALERT_THRESHOLD: float = Field(default=0.8, gt=0.0, le=1.0)
+
     # ---- Retencao do acervo ----
     # A demo e publica: quem sobe documento deixa dado de terceiro no banco.
     # Nada aqui protege a fatura — protege quem enviou o arquivo, e o disco.

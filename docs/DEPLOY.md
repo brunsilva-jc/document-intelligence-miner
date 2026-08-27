@@ -66,6 +66,20 @@ A varredura é uma tarefa de fundo do próprio processo da API — não precisa 
 entrada no cron. `RETENTION_ENABLED=false` desliga, e o boot registra um
 `WARNING` dizendo que o acervo passa a depender de limpeza manual.
 
+E os da observabilidade — sem eles a instância roda muda, e a única testemunha
+de um erro é o `docker logs` de quem lembrar de abrir:
+
+| Variável | Padrão | O que faz |
+|---|---|---|
+| `SENTRY_DSN` | vazio | destino dos eventos de erro; vazio = desligado |
+| `SENTRY_TRACES_SAMPLE_RATE` | `0.0` | fração de requisições com tracing |
+| `COST_ALERT_THRESHOLD` | `0.8` | fração do teto diário que vira alerta de custo |
+
+O DSN aceita tanto o Sentry SaaS quanto um **GlitchTip** auto-hospedado, que
+fala o mesmo protocolo — útil se preferir não mandar erro nenhum para fora da
+máquina. Os eventos saem sem PII e sem variáveis locais; veja o porquê no
+README, em *Observabilidade*.
+
 ## 2. A rede do proxy reverso
 
 Só um processo pode escutar na porta 443, então o proxy é infraestrutura da
@@ -151,6 +165,10 @@ curl -so /dev/null -w '%{http_code}\n' https://dim.exemplo.com/docs
 # a retenção subiu junto com a API (uma linha por boot)
 docker logs dim_api 2>&1 | grep -i retencao
 # retencao ligada: 7 dia(s) de idade, teto de 100 documentos, varredura a cada 3600s
+
+# a observabilidade subiu (ou avisa que está desligada)
+docker logs dim_api 2>&1 | grep -i sentry
+# sentry ligado (env=production, traces=0.0)
 
 # 429 depois de passar do teto — o limite de uso está ativo
 for _ in $(seq 70); do

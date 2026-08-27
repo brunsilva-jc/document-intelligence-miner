@@ -12,6 +12,7 @@ from app.core.body_limit import MULTIPART_OVERHEAD_BYTES, LimiteDeCorpoMiddlewar
 from app.core.config import settings
 from app.core.exceptions import register_exception_handlers
 from app.core.logging import get_logger, setup_logging
+from app.core.observability import configurar_observabilidade
 from app.db.session import dispose_engine, init_db
 from app.services.retention import (
     encerrar_rotina_de_retencao,
@@ -39,6 +40,11 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
 
 def create_app() -> FastAPI:
     """Application factory — facilita testes e multiplas configuracoes."""
+    # Antes de instanciar o FastAPI: as integracoes do Sentry instrumentam
+    # o Starlette no momento do `init`, e uma aplicacao ja construida nao
+    # seria alcancada por elas.
+    configurar_observabilidade()
+
     # Fora de `local` a documentacao interativa sai do ar: ela descreve, para
     # quem passar na porta, exatamente como gastar a conta de API. Quem
     # integra recebe o OpenAPI por outro canal.
